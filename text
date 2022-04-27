@@ -1,0 +1,239 @@
+//jshint esversion:
+require('dotenv').config();
+const express = require ("express");
+const bodyParser = require("body-parser")
+const ejs = require("ejs");
+const { resolveSoa } = require("dns");
+const mongoose = require("mongoose");
+const { MongoDBNamespace } = require("mongodb");
+const session = require ("express-session");
+const passport =  require("passport");
+// this module will salt and hash our passwords
+const passportLocalMongoose = require("passport-local-mongoose");
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
+const findOrCreate = require('mongoose-findorcreate');
+const date = require (__dirname + "/date.js");
+const JwtStrategy = require('passport-jwt').Strategy
+const ExtractJwt = require('passport-jwt').ExtractJwt;
+// const path = require ("path");
+
+const cors = require("cors");
+
+const options = {
+    jwtFromRequest : ExtractJwt.fromAuthHeaderAsBearerToken(),
+    secretOrKey: process.env.PUB_KEY,
+    algorithms: ['RS256']
+};
+
+const strategy = new JwtStrategy(options, (payload,done)=>{
+    
+    User.findOne({ _id:payload.sub})
+    .then((user)=>{
+        if(user){
+            return done (null, user);
+        }
+else {
+    return done (null, false);
+}
+    })
+    .catch(err => done(err, null));
+    
+});
+module.exports = (passport) =>{
+    passport.use(strategy);
+}
+
+let token;
+
+
+const app = express();
+
+
+
+let day = date();
+
+app.use(express.static("public"));
+app.use(express.json());
+app.set('view engine', 'ejs');
+app.use(bodyParser.urlencoded({
+    extended:true
+}));
+// allows the client and server to communicate on different ports 
+
+app.use(cors());
+
+// setup our session
+app.use(session({
+    secret:"Our little secret.",
+    resave:false,
+    saveUninitialized:false,
+    expires: 36000000,
+    cookie: { secure: true },
+   
+
+}));
+
+// app.use(express.static(path.join(__dirname, '/../client/public')));
+
+// tell our app to use passport and initialize the passport package
+app.use(passport.initialize());
+// tell the app to use passport to setup session
+app.use(passport.session());
+
+
+// Use mongoose to connect to database 
+mongoose.connect("mongodb://localhost:27017/userDB");
+
+// create database schema 
+const userSchema = new mongoose.Schema({
+    email : String,
+    password : String,
+    googleId : String
+});
+// use to hash and salt our passwords
+userSchema.plugin(passportLocalMongoose);
+userSchema.plugin(findOrCreate);
+
+// Use Schema to create USER Model, this will allow use to add users to this model
+
+const User = new mongoose.model("User", userSchema);
+passport.use(User.createStrategy());
+
+
+passport.serializeUser(function(user, done) {
+  done(null, user.id);
+});
+
+passport.deserializeUser(function(id, done) {
+  User.findById(id, function(err, user) {
+    done(err, user);
+  });
+});
+
+passport.use(new GoogleStrategy({
+    clientID: process.env.CLIENT_ID,
+    clientSecret: process.env.CLIENT_SECRET,
+    callbackURL: "http://localhost:3000/auth/google/secrets",
+    userProfileURL:"https://www.googleapis.com/oauth2/v3/userinfo"
+  },
+  function(accessToken, refreshToken, profile, cb) {
+    User.findOrCreate({ googleId: profile.id }, function (err, user) {
+      return cb(err, user);
+    });
+  }
+));
+
+
+app.get("/", function(req,res){
+    res.render("home",{
+        currentDate:day
+    });
+});
+
+
+
+app.get("/auth/google",
+  passport.authenticate('google', { scope: ["profile"] })
+);
+
+
+
+app.get("/auth/google/secrets",
+  passport.authenticate('google', { failureRedirect: "/login" }),
+  function(req, res) {
+    // Successful authentication, redirect to secrets.
+    res.redirect("/budget");
+  });
+
+  
+
+app.get("/login", function(req,res){
+    res.render("login",{
+        currentDate:day
+        
+    });
+
+   
+    
+});
+app.get("/register", function(req,res){
+    res.render("register",{
+        currentDate:day
+    });
+});
+// checks to see if user is authenticated then redirect them to the home pafe
+app.get("/budget", function(req,res){
+    if(req.isAuthenticated()){
+        res.render("budget",{
+            currentDate:day
+        });
+    }else{
+        res.redirect("/login")
+
+    }
+});
+
+app.get("/logout", function(req,res){
+    req.logout();
+    res.redirect("/");
+
+});
+
+// captures the values when posted from the register page
+app.post("/register", function(req,res){
+    User.register(
+        {username:req.body.username},
+        req.body.password, function(err, user){
+            if(err){
+                console.log(err);
+                res.redirect("/register");
+            }else{
+                passport.authenticate("local")(req,res, function(){
+                    res.redirect("/budget");
+                })
+
+            }
+        });
+    
+}); // end of "register" post request
+
+// validate users on login
+app.post("/login", function(req, res){
+        const user = new User({
+        username:req.body.username,
+        password:req.body.password
+        });
+        
+    // this method comes from passport documentation
+        req.login(user, function(err){
+        if(err){
+            console.log(err);
+        }
+        else{
+            passport.authenticate("JWT")(req,res, function(){
+               
+            
+            // token = req.session.passport;
+            // console.log(token);
+            // res.send(token);
+            // const id = user.id;
+          
+         
+                // res.redirect("/budget");
+              
+            })
+        }
+    })
+});
+
+
+
+
+
+
+app.listen(5000, function(){
+    console.log("Server started on port 5000.");
+
+});
+
+
